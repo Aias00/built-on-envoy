@@ -1,4 +1,4 @@
-// Copyright Envoy Ecosystem
+// Copyright Built On Envoy
 // SPDX-License-Identifier: Apache-2.0
 // The full text of the Apache license is available in the LICENSE file at
 // the root of the repo.
@@ -13,7 +13,7 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/stretchr/testify/require"
 
-	"github.com/tetratelabs/envoy-ecosystem/cli/internal/extensions"
+	"github.com/tetratelabs/built-on-envoy/cli/internal/extensions"
 )
 
 func TestParseCmdListHelp(t *testing.T) {
@@ -23,7 +23,7 @@ func TestParseCmdListHelp(t *testing.T) {
 
 	var buf bytes.Buffer
 	parser, err := kong.New(&cli,
-		kong.Name("ee"),
+		kong.Name("boe"),
 		kong.Writers(&buf, &buf),
 		kong.Exit(func(int) {}),
 	)
@@ -31,7 +31,7 @@ func TestParseCmdListHelp(t *testing.T) {
 
 	_, _ = parser.Parse([]string{"list", "--help"})
 
-	expected := `Usage: ee list
+	expected := `Usage: boe list
 
 List available extensions
 

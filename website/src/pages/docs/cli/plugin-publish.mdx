@@ -1,17 +1,19 @@
 ---
 layout: ../../../layouts/DocsLayout.astro
-title: ee plugin publish
+title: plugin publish
 description: Publish your extension to the marketplace
 ---
 
-# ee plugin publish
+import CLIName from '../../../components/CLIName.astro';
+
+# <CLIName/> plugin publish
 
 Publish your extension to the marketplace. Opens a pull request to the community repository.
 
 ## Usage
 
 ```bash
-ee plugin publish <path> [options]
+<CLIName/> plugin publish <path> [options]
 ```
 
 ## Arguments
@@ -27,7 +29,7 @@ Validate without publishing
 ### `--fork <repo>`
 Use a specific fork for the PR
 
-Example: `--fork myuser/envoy-ecosystem`
+Example: `--fork myuser/built-on-envoy`
 
 ### `--branch <name>`
 Branch name for the PR (default: auto-generated)
@@ -41,22 +43,22 @@ Custom PR description
 
 ### Publish current directory
 ```bash
-ee plugin publish
+<CLIName/> plugin publish
 ```
 
 ### Publish specific directory
 ```bash
-ee plugin publish ./my-filter
+<CLIName/> plugin publish ./my-filter
 ```
 
 ### Dry run validation
 ```bash
-ee plugin publish --dry-run
+<CLIName/> plugin publish --dry-run
 ```
 
 ### Custom PR message
 ```bash
-ee plugin publish --message "Add advanced caching filter with LRU eviction"
+<CLIName/> plugin publish --message "Add advanced caching filter with LRU eviction"
 ```
 
 ## Validation
@@ -83,7 +85,7 @@ The CLI validates:
 → Opening pull request...
 
 ✓ Pull request created!
-  https://github.com/tetratelabs/envoy-ecosystem/pulls/42
+  https://github.com/tetratelabs/built-on-envoy/pulls/42
 
 Your extension will be reviewed by maintainers.
 You'll receive notifications on the PR.
