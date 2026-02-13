@@ -122,16 +122,9 @@ func (w WasmFilterGenerator) GenerateFilterConfig(*extensions.Manifest, *xdg.Dir
 }
 
 // GenerateFilterConfig generates the filter configuration for Dynamic Module extensions.
-func (d DynamicModuleFilterGenerator) GenerateFilterConfig(manifest *extensions.Manifest, dirs *xdg.Directories, config string) (*ExtensionResources, error) {
-	// TODO(wbpcode): For now, we only support Composer dynamic modules because all golang dynamic
-	// modules will be compiled into the same binary.
-	// Once we support other dynamic modules, we need to differentiate them here.
-	cachedComposerPath := extensions.LocalCacheComposerLib(dirs, manifest.Version, !manifest.Remote)
-	if _, err := os.Stat(cachedComposerPath); os.IsNotExist(err) {
-		// TODO(wbpcode): Download the composer binary from the URL specified in the manifest.
-		return nil, fmt.Errorf("composer binary not found at %s", cachedComposerPath)
-	}
-
+func (d DynamicModuleFilterGenerator) GenerateFilterConfig(manifest *extensions.Manifest,
+	_ *xdg.Directories, config string,
+) (*ExtensionResources, error) {
 	var anyConfig *anypb.Any
 
 	if config != "" {
@@ -144,15 +137,17 @@ func (d DynamicModuleFilterGenerator) GenerateFilterConfig(manifest *extensions.
 		anyConfig, _ = anypb.New(configStringValue)
 	}
 
+	// Use the library name (with underscores) as the dynamic module config name.
+	// This is the identifier Envoy uses to reference the loaded module.
 	protoConfig := &dymhttpv3.DynamicModuleFilter{
 		DynamicModuleConfig: &dymv3.DynamicModuleConfig{
-			Name:         "composer",
-			LoadGlobally: true,
+			Name:         manifest.Name,
+			LoadGlobally: false,
 		},
 		FilterName:   manifest.Name,
 		FilterConfig: anyConfig,
 	}
-	composerAny, err := anypb.New(protoConfig)
+	dynamicModuleAny, err := anypb.New(protoConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal dynamic module filter to Any: %w", err)
 	}
@@ -162,7 +157,7 @@ func (d DynamicModuleFilterGenerator) GenerateFilterConfig(manifest *extensions.
 			{
 				Name: manifest.Name,
 				ConfigType: &hcmv3.HttpFilter_TypedConfig{
-					TypedConfig: composerAny,
+					TypedConfig: dynamicModuleAny,
 				},
 			},
 		},

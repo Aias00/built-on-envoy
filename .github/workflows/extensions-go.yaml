@@ -33,6 +33,6 @@ jobs:
       
       - name: Build plugins
         run: make build_plugins
-      
+
       - name: Run tests
         run: make test
