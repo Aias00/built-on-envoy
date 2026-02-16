@@ -45,17 +45,20 @@ type Runner struct {
 	Extensions []*extensions.Manifest
 	// Configs specifies optional JSON config strings for each extension (by index).
 	Configs []string
+	// Clusters specifies additional Envoy cluster JSON strings to include in the configuration.
+	Clusters []string
 }
 
 // Run starts Envoy using func-e as a library
 func (r *Runner) Run(ctx context.Context) error {
-	params := ConfigGenerationParams{
+	params := &ConfigGenerationParams{
 		Logger:       r.Logger,
 		AdminPort:    r.AdminPort,
 		ListenerPort: r.ListenPort,
 		Dirs:         r.Dirs,
 		Extensions:   r.Extensions,
 		Configs:      r.Configs,
+		Clusters:     r.Clusters,
 	}
 	config, err := RenderConfig(params, FullConfigRenderer)
 	if err != nil {
@@ -135,7 +138,7 @@ Press Ctrl+C to stop
 // setupDynamicModuleSearchPath creates a temporary directory and populates it with hard links
 // to all dynamic module libraries (both composer and Rust dynamic modules).
 // Returns the path to the temporary directory and a cleanup function.
-func setupDynamicModuleSearchPath(params ConfigGenerationParams) (string, func(), error) {
+func setupDynamicModuleSearchPath(params *ConfigGenerationParams) (string, func(), error) {
 	// Create a temporary directory for dynamic module libraries
 	tempDir, err := os.MkdirTemp("", "boe-dynamic-modules-*")
 	if err != nil {

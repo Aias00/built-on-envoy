@@ -9,6 +9,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
+	"strconv"
+	"strings"
 
 	accesslogv3 "github.com/envoyproxy/go-control-plane/envoy/config/accesslog/v3"
 	bootstrapv3 "github.com/envoyproxy/go-control-plane/envoy/config/bootstrap/v3"
@@ -44,6 +47,8 @@ type ConfigGenerationParams struct {
 	Extensions []*extensions.Manifest
 	// Configs specifies optional JSON config strings for each extension (by index).
 	Configs []string
+	// Clusters specifies additional Envoy cluster JSON strings to include in the configuration.
+	Clusters []string
 }
 
 // GeneratedConfigResources holds the generated Envoy resources for an extension.
@@ -55,11 +60,11 @@ type GeneratedConfigResources struct {
 }
 
 // ConfigRenderer is a function type that renders the Envoy configuration based on the provided parameters and generated resources.
-type ConfigRenderer func(ConfigGenerationParams, GeneratedConfigResources) (string, error)
+type ConfigRenderer func(*ConfigGenerationParams, GeneratedConfigResources) (string, error)
 
 // RenderConfig renders the Envoy configuration with the given parameters.
 // The ouyput is a YAML string that is passed to func-e to run Envoy.
-func RenderConfig(params ConfigGenerationParams, renderer ConfigRenderer) (string, error) {
+func RenderConfig(params *ConfigGenerationParams, renderer ConfigRenderer) (string, error) {
 	gen, err := generateConfig(params)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate config resources: %w", err)
@@ -68,7 +73,7 @@ func RenderConfig(params ConfigGenerationParams, renderer ConfigRenderer) (strin
 }
 
 // FullConfigRenderer is a default ConfigRenderer that generates the full Envoy configuration with listeners, clusters, and admin interface.
-func FullConfigRenderer(params ConfigGenerationParams, gen GeneratedConfigResources) (string, error) {
+func FullConfigRenderer(params *ConfigGenerationParams, gen GeneratedConfigResources) (string, error) {
 	params.Logger.Info("rendering full Envoy config")
 
 	cfg, err := buildFullConfig(params.AdminPort, params.ListenerPort, gen.HTTPFilters, gen.Clusters)
@@ -83,7 +88,7 @@ func FullConfigRenderer(params ConfigGenerationParams, gen GeneratedConfigResour
 }
 
 // MinimalConfigRenderer is a ConfigRenderer that generates a minimal Envoy configuration containing only the generated HTTP filters and clusters.
-func MinimalConfigRenderer(params ConfigGenerationParams, gen GeneratedConfigResources) (string, error) {
+func MinimalConfigRenderer(params *ConfigGenerationParams, gen GeneratedConfigResources) (string, error) {
 	params.Logger.Info("rendering minimal Envoy config")
 
 	filterConfigs, err := protoListToAny(gen.HTTPFilters)
@@ -108,7 +113,7 @@ func MinimalConfigRenderer(params ConfigGenerationParams, gen GeneratedConfigRes
 }
 
 // generateConfig generates the Envoy configuration resources for the given extensions and parameters.
-func generateConfig(params ConfigGenerationParams) (GeneratedConfigResources, error) {
+func generateConfig(params *ConfigGenerationParams) (GeneratedConfigResources, error) {
 	filters := make([]*hcmv3.HttpFilter, 0, len(params.Extensions))
 	clusters := make([]*clusterv3.Cluster, 0)
 	for i, ext := range params.Extensions {
@@ -124,10 +129,44 @@ func generateConfig(params ConfigGenerationParams) (GeneratedConfigResources, er
 		clusters = append(clusters, resources.Clusters...)
 	}
 
+	for i, clusterSpec := range params.Clusters {
+		cluster, err := parseCluster(clusterSpec)
+		if err != nil {
+			return GeneratedConfigResources{}, fmt.Errorf("failed to parse --cluster[%d]: %w", i, err)
+		}
+		clusters = append(clusters, cluster)
+	}
+
 	return GeneratedConfigResources{
 		HTTPFilters: filters,
 		Clusters:    clusters,
 	}, nil
+}
+
+// parseCluster parses a cluster specification. It supports:
+//   - short format "host:tlsPort" that generates a STRICT_DNS cluster with TLS.
+//     The cluster name is derived as "host:tlsPort".
+//   - raw JSON for full control over the cluster configuration.
+func parseCluster(spec string) (*clusterv3.Cluster, error) {
+	if strings.HasPrefix(spec, "{") {
+		var cluster clusterv3.Cluster
+		if err := protojson.Unmarshal([]byte(spec), &cluster); err != nil {
+			return nil, fmt.Errorf("invalid JSON cluster spec: %w", err)
+		}
+		return &cluster, nil
+	}
+	// Fall back to short format parsing (host:tlsPort)
+	host, portStr, err := net.SplitHostPort(spec)
+	if err != nil {
+		return nil, fmt.Errorf("invalid cluster spec %q: must be JSON or in the format host:tlsPort", spec)
+	}
+	port, err := strconv.ParseUint(portStr, 10, 32)
+	if err != nil {
+		return nil, fmt.Errorf("invalid port in cluster short format: %w", err)
+	}
+	// The cluster name is the host and port combined, e.g. "example.com:443"
+	// we can reuse spec as the name since it is already in the correct format.
+	return buildTestUpstreamCluster(spec, host, uint32(port))
 }
 
 // buildFullConfig creates the EnvoyConfiguration based on the provided parameters.
