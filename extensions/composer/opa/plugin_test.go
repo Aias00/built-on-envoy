@@ -818,7 +818,6 @@ allow if {
 	mockHandle.EXPECT().GetAttributeBool(shared.AttributeIDConnectionMtls).Return(false, false).AnyTimes()
 	mockHandle.EXPECT().GetAttributeString(shared.AttributeIDConnectionTlsVersion).Return(pkg.UnsafeBufferFromString("TLSv1.3"), true).AnyTimes()
 	mockHandle.EXPECT().GetAttributeString(shared.AttributeIDConnectionSha256PeerCertificateDigest).Return(pkg.UnsafeBufferFromString(""), false).AnyTimes()
-	mockHandle.EXPECT().GetAttributeBool(shared.AttributeIDConnectionMtls).Return(false, false).AnyTimes()
 	mockHandle.EXPECT().SendLocalResponse(uint32(403), gomock.Any(), []byte("Forbidden"), "opa_denied")
 	mockHandle.EXPECT().IncrementCounterValue(shared.MetricID(1), uint64(1), "denied").Return(shared.MetricsSuccess)
 
@@ -1409,4 +1408,95 @@ default allow := true
 	trailers := fake.NewFakeHeaderMap(map[string][]string{})
 	trailersStatus := filter.OnRequestTrailers(trailers)
 	require.Equal(t, shared.TrailersStatusContinue, trailersStatus)
+}
+
+// Tests for dynamicMetadataMap / buildInput dynamic metadata
+
+func TestBuildInput_DynamicMetadata_MultipleNamespacesAndKeys(t *testing.T) {
+	policy := `package envoy.authz
+default allow := true
+`
+	policyFile := createTestPolicyFile(t, policy)
+	cfg := opaConfig{
+		Policies:           []pkg.DataSource{{File: policyFile}},
+		MetadataNamespaces: []string{"ns.auth", "ns.ratelimit"},
+	}
+	configJSON, err := json.Marshal(cfg)
+	require.NoError(t, err)
+
+	factory := &OPAHttpFilterConfigFactory{}
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockConfigHandle := mocks.NewMockHttpFilterConfigHandle(ctrl)
+	mockConfigHandle.EXPECT().Log(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
+	mockConfigHandle.EXPECT().DefineCounter("opa_requests_total", "decision").Return(shared.MetricID(1), shared.MetricsSuccess)
+
+	filterFactory, err := factory.Create(mockConfigHandle, configJSON)
+	require.NoError(t, err)
+
+	mockHandle := mocks.NewMockHttpFilterHandle(ctrl)
+	mockHandle.EXPECT().Log(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
+	mockHandle.EXPECT().GetAttributeString(gomock.Any()).Return(pkg.UnsafeBufferFromString(""), false).AnyTimes()
+	mockHandle.EXPECT().GetAttributeBool(gomock.Any()).Return(false, false).AnyTimes()
+
+	// Namespace "ns.auth" has two string keys.
+	mockHandle.EXPECT().GetMetadataKeys(shared.MetadataSourceTypeDynamic, "ns.auth").Return([]shared.UnsafeEnvoyBuffer{
+		pkg.UnsafeBufferFromString("identity"),
+		pkg.UnsafeBufferFromString("role"),
+	})
+	mockHandle.EXPECT().GetMetadataString(shared.MetadataSourceTypeDynamic, "ns.auth", "identity").Return(pkg.UnsafeBufferFromString("user-123"), true)
+	mockHandle.EXPECT().GetMetadataString(shared.MetadataSourceTypeDynamic, "ns.auth", "role").Return(pkg.UnsafeBufferFromString("admin"), true)
+
+	// Namespace "ns.ratelimit" has a string key
+	mockHandle.EXPECT().GetMetadataKeys(shared.MetadataSourceTypeDynamic, "ns.ratelimit").Return([]shared.UnsafeEnvoyBuffer{
+		pkg.UnsafeBufferFromString("bucket"),
+	})
+	mockHandle.EXPECT().GetMetadataString(shared.MetadataSourceTypeDynamic, "ns.ratelimit", "bucket").Return(pkg.UnsafeBufferFromString("default"), true)
+
+	filter := filterFactory.Create(mockHandle).(*opaHttpFilter)
+
+	headers := fake.NewFakeHeaderMap(map[string][]string{
+		":method":    {"GET"},
+		":path":      {"/api/resource"},
+		":authority": {"example.com"},
+	})
+
+	input := filter.buildInput(headers, nil)
+
+	// Verify dynamic_metadata is present and structured by namespace.
+	dm, ok := input["dynamic_metadata"].(map[string]any)
+	require.True(t, ok)
+	require.Len(t, dm, 2, "expected two namespaces in dynamic_metadata")
+
+	// Verify ns.auth namespace.
+	authNs, ok := dm["ns.auth"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "user-123", authNs["identity"])
+	require.Equal(t, "admin", authNs["role"])
+
+	// Verify ns.ratelimit namespace.
+	rlNs, ok := dm["ns.ratelimit"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "default", rlNs["bucket"])
+}
+
+func TestBuildInput_DynamicMetadata_Empty(t *testing.T) {
+	policy := `package envoy.authz
+default allow := true
+`
+	filter, _ := createTestFilter(t, opaConfig{Policies: []pkg.DataSource{{Inline: policy}}})
+
+	headers := fake.NewFakeHeaderMap(map[string][]string{
+		":method":    {"GET"},
+		":path":      {"/"},
+		":authority": {"example.com"},
+	})
+
+	input := filter.buildInput(headers, nil)
+
+	// When no dynamic metadata exists, the map should be empty.
+	dm, ok := input["dynamic_metadata"].(map[string]any)
+	require.True(t, ok)
+	require.Empty(t, dm)
 }

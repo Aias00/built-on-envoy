@@ -36,6 +36,8 @@ HUB        := $(or $(BOE_REGISTRY),$(OCI_REGISTRY)/built-on-envoy)
 IMAGE      := $(HUB)/$(NAME):$(VERSION)$(IMAGE_NONCE)
 SOURCE     := https://$(subst ghcr.io,github.com,$(HUB))
 
+comma := ,
+
 # Shared variables used by both this Makefile and the main Makefile.
 include Makefile.common
 # Option to build lite version of the loader.
@@ -111,7 +113,6 @@ BINARY_ARTIFACT := --annotation "io.tetratelabs.built-on-envoy.extension.artifac
 SOURCE_ARTIFACT := --annotation "io.tetratelabs.built-on-envoy.extension.artifact=source"
 
 # Multi-platform OCI annotations (with index,manifest prefix, for binary artifacts)
-comma := ,
 MULTI_OCI_ANNOTATIONS := \
 	$(subst --annotation ",--annotation "index$(comma)manifest:,$(BASE_OCI_ANNOTATIONS)) \
 	--annotation "index,manifest:io.tetratelabs.built-on-envoy.extension.artifact=binary"
@@ -167,6 +168,7 @@ push_image: create_builder  ## Build and push docker image for the plugin for cr
 CODE_IMAGE := $(HUB)/$(NAME)-src:$(VERSION)$(IMAGE_NONCE)
 .PHONY: push_code
 push_code: create_builder  ## Build and push source code image
+	$(MAKE) -C integration clean
 	@echo "Building and pushing source code image..."
 	docker buildx build \
 		--builder $(BUILDER_NAME) \
@@ -201,14 +203,14 @@ ENVOY_VERSION ?= distroless-dev
 ENVOY_IMAGE ?= docker.io/envoyproxy/envoy:$(ENVOY_VERSION)
 COMPOSER_LIB_PATH ?= $(CURDIR)/libcomposer.so
 CRS_REPO ?= https://github.com/coreruleset/coreruleset.git
-WAF_CRS_VERSION ?= $(shell sed -n 's/^\# OWASP CRS ver\.//p' $(CURDIR)/waf/coraza/rules/crs-setup.conf | head -n 1)
+WAF_CRS_VERSION ?= $(shell sed -n 's/^\# OWASP CRS ver\.//p' $(CURDIR)/waf/coraza/directives/@crs-setup.conf | head -n 1)
 CRS_REF ?= v$(WAF_CRS_VERSION)
 CRS_DIR ?= $(CURDIR)/integration/coreruleset/tests/regression/tests
 
 .PHONY: integration-setup
 integration-setup:
 	@if [ -z "$(WAF_CRS_VERSION)" ]; then \
-		echo "Could not determine WAF CRS version from waf/coraza/rules/crs-setup.conf"; \
+		echo "Could not determine WAF CRS version from waf/coraza/directives/@crs-setup.conf"; \
 		exit 1; \
 	fi
 	@if [ ! -d "$(CURDIR)/integration/coreruleset/.git" ]; then \

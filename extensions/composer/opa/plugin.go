@@ -41,6 +41,9 @@ type opaConfig struct {
 	// result in "body" being absent from the input. When false (default), the policy is
 	// evaluated on request headers only.
 	WithBody bool `json:"with_body"`
+	// MetadataNamespaces is an optional list of dynamic metadata namespaces to include in the OPA
+	// input document under the "dynamic_metadata" key.
+	MetadataNamespaces []string `json:"metadata_namespaces"`
 }
 
 // Metric tag values for authorization decisions.
@@ -231,6 +234,7 @@ func (o *opaHttpFilter) buildInput(headers shared.HeaderMap, parsedBody any) map
 		host   = headers.GetOne(":authority").ToUnsafeString()
 		scheme = cmp.Or(headers.GetOne(":scheme").ToUnsafeString(), "http")
 	)
+
 	parsedPath, parsedQuery := parsePath(path)
 	protocolAttr, _ := o.handle.GetAttributeString(shared.AttributeIDRequestProtocol)
 	protocol := cmp.Or(protocolAttr.ToUnsafeString(), "HTTP/1.1")
@@ -286,13 +290,36 @@ func (o *opaHttpFilter) buildInput(headers shared.HeaderMap, parsedBody any) map
 				"tls_version": tlsVersion.ToUnsafeString(),
 			},
 		},
-		"parsed_path":  parsedPath,
-		"parsed_query": parsedQuery,
+		"dynamic_metadata": o.dynamicMetadataMap(),
+		"parsed_path":      parsedPath,
+		"parsed_query":     parsedQuery,
 	}
 	if parsedBody != nil {
 		result["body"] = parsedBody
 	}
 	return result
+}
+
+// dynamicMetadataMap extracts dynamic metadata from the filter handle and returns it as a
+// nested map keyed by namespace and then by key.
+func (o *opaHttpFilter) dynamicMetadataMap() map[string]any {
+	dm := make(map[string]any)
+	for _, ns := range o.config.MetadataNamespaces {
+		nsMap := make(map[string]any)
+		keys := o.handle.GetMetadataKeys(shared.MetadataSourceTypeDynamic, ns)
+		for _, key := range keys {
+			keyStr := key.ToUnsafeString()
+			if value, ok := o.handle.GetMetadataString(shared.MetadataSourceTypeDynamic, ns, keyStr); ok {
+				nsMap[keyStr] = value.ToUnsafeString()
+			} else if numValue, ok := o.handle.GetMetadataNumber(shared.MetadataSourceTypeDynamic, ns, keyStr); ok {
+				nsMap[keyStr] = numValue
+			}
+		}
+		if len(nsMap) > 0 {
+			dm[ns] = nsMap
+		}
+	}
+	return dm
 }
 
 // parsePath splits the path into segments and parses query parameters into a map.
