@@ -564,6 +564,49 @@
     "sourcePath": "composer/llm-proxy"
   },
   {
+    "name": "llm-statistics",
+    "version": "0.5.0-dev",
+    "parent": "composer",
+    "categories": [
+      "AI"
+    ],
+    "author": "Tetrate",
+    "featured": true,
+    "description": "Collect metrics and structured logs for LLM API requests and responses",
+    "longDescription": "An HTTP filter plugin that inspects well-known LLM API traffic and emits\nobservability signals for request and response processing.\n\nThe plugin supports OpenAI Chat Completions and Anthropic Messages APIs,\nincluding both non-streaming JSON responses and streaming SSE responses.\n\n## Key Features\n\n- **LLM request detection**: Recognizes OpenAI and Anthropic API paths out of the box\n- **Token usage metrics**: Records input, output, and total token counters\n- **Latency metrics**: Records request duration and time-to-first-token for streaming\n- **Structured logs**: Emits a compact JSON log entry with model, token counts, durations,\n  and optional session ID\n- **Dynamic metadata**: Writes extracted observability fields to Envoy filter metadata\n\n## Configuration Fields\n\n| Field | Type | Required | Default | Description |\n|-------|------|----------|---------|-------------|\n| `metadata_namespace` | string | no | `io.builtonenvoy.llm-statistics` | Filter metadata namespace |\n| `use_default_attributes` | bool | no | `false` | Emit the full built-in structured log payload |\n| `use_default_response_attributes` | bool | no | `false` | Emit the default lightweight structured log payload |\n| `session_id_header` | string | no | `\"\"` | Optional header name used to extract a conversation/session ID |\n\n## Dynamic Metadata\n\nBy default the plugin writes values under the namespace `io.builtonenvoy.llm-statistics`.\nThese fields can be consumed by downstream filters or access logs.\n\nCommon keys include:\n\n- `kind`\n- `model`\n- `response_type`\n- `session_id`\n- `question`\n- `system`\n- `answer`\n- `reasoning`\n- `tool_calls`\n- `input_token`\n- `output_token`\n- `total_token`\n- `reasoning_tokens`\n- `cached_tokens`\n- `input_token_details`\n- `output_token_details`\n- `llm_service_duration_ms`\n- `llm_first_token_duration_ms`\n\n## Access Log Example\n\nThe default `boe run` access log does not print dynamic metadata. To inspect\nthese values, export the generated config and customize the access log formatter\nto use Envoy's `DYNAMIC_METADATA(namespace:key)` formatter.\n",
+    "type": "go",
+    "tags": [
+      "go",
+      "http",
+      "ai",
+      "llm",
+      "observability",
+      "metrics",
+      "logging"
+    ],
+    "license": "Apache-2.0",
+    "examples": [
+      {
+        "title": "Lightweight LLM observability",
+        "description": "Record lightweight LLM metrics and emit a structured log entry with model,\ntoken counts, and latency information.\n",
+        "code": "boe run --extension llm-statistics --config '{\n  \"use_default_response_attributes\": true,\n  \"session_id_header\": \"x-session-id\"\n}'\n"
+      },
+      {
+        "title": "Full built-in attributes",
+        "description": "Emit the full built-in attribute set, including `question`, `system`,\n`answer`, `reasoning`, `tool_calls`, and token detail fields.\n",
+        "code": "boe run --extension llm-statistics --config '{\n  \"use_default_attributes\": true,\n  \"session_id_header\": \"x-session-id\"\n}'\n"
+      },
+      {
+        "title": "Export config and customize access logs",
+        "description": "Export the generated Envoy config, then replace the default access log with\na `typed_json_format` logger that reads values from\n`io.builtonenvoy.llm-statistics` via `%DYNAMIC_METADATA(...)%`.\n",
+        "code": "boe gen-config \\\n  --local ./extensions/composer/llm-statistics \\\n  --config '{\"use_default_attributes\": true, \"session_id_header\": \"x-session-id\"}' \\\n  --output /tmp/boe-export\n\n# Edit /tmp/boe-export/envoy.yaml and replace the access log with:\n#\n# access_log:\n#   - name: envoy.access_loggers.stdout\n#     typed_config:\n#       \"@type\": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog\n#       log_format:\n#         typed_json_format:\n#           llm_kind: \"%DYNAMIC_METADATA(io.builtonenvoy.llm-statistics:kind)%\"\n#           llm_model: \"%DYNAMIC_METADATA(io.builtonenvoy.llm-statistics:model)%\"\n#           llm_question: \"%DYNAMIC_METADATA(io.builtonenvoy.llm-statistics:question)%\"\n#           llm_tool_calls: \"%DYNAMIC_METADATA(io.builtonenvoy.llm-statistics:tool_calls)%\"\n"
+      }
+    ],
+    "minEnvoyVersion": "1.37.1",
+    "composerVersion": "0.5.0-dev",
+    "sourcePath": "composer/llm-statistics"
+  },
+  {
     "name": "opa",
     "version": "0.5.0-dev",
     "parent": "composer",
