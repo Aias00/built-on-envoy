@@ -109,6 +109,38 @@ func TestStatisticsFilter_OnRequestHeaders_StripsQueryStringForPathMatching(t *t
 	}
 }
 
+func TestStatisticsFilter_OnRequestTrailers_FinalizesBufferedRequest(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	requestBody := []byte(`{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hello"}]}`)
+
+	handle := mocks.NewMockHttpFilterHandle(ctrl)
+	handle.EXPECT().GetAttributeString(shared.AttributeIDRequestPath).
+		Return(pkg.UnsafeBufferFromString("/v1/chat/completions"), true)
+	handle.EXPECT().SetMetadata(defaultMetadataNamespace, "kind", "openai").Times(1)
+	handle.EXPECT().SetMetadata(defaultMetadataNamespace, "model", "gpt-4o").Times(1)
+	handle.EXPECT().SetMetadata(defaultMetadataNamespace, "response_type", responseTypeNonStream).Times(1)
+	handle.EXPECT().SetMetadata(defaultMetadataNamespace, "question", "hello").Times(1)
+	handle.EXPECT().RequestHeaders().Return(fake.NewFakeHeaderMap(nil)).AnyTimes()
+	handle.EXPECT().BufferedRequestBody().Return(fake.NewFakeBodyBuffer(requestBody)).AnyTimes()
+	handle.EXPECT().ReceivedRequestBody().Return(nil).AnyTimes()
+
+	filter := &statisticsFilter{
+		handle:  handle,
+		config:  &statisticsConfig{MetadataNamespace: defaultMetadataNamespace},
+		metrics: newTestStats(ctrl),
+	}
+
+	headers := fake.NewFakeHeaderMap(map[string][]string{"content-type": {"application/json"}})
+	require.Equal(t, shared.HeadersStatusStop, filter.OnRequestHeaders(headers, false))
+	require.Equal(t, shared.BodyStatusStopAndBuffer, filter.OnRequestBody(fake.NewFakeBodyBuffer(requestBody), false))
+	require.Equal(t, shared.TrailersStatusContinue, filter.OnRequestTrailers(fake.NewFakeHeaderMap(nil)))
+	require.True(t, filter.requestProcessed)
+	require.False(t, filter.parseFailed)
+	require.Equal(t, "gpt-4o", filter.model)
+}
+
 func TestStatisticsFilter_OpenAINonStreaming_LightweightLogAndMetrics(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -1064,4 +1096,115 @@ func TestStatisticsFilter_Finish_WritesStructuredMetadata(t *testing.T) {
 	outputDetails, ok := captured["output_token_details"].(*openAICompletionTokensDetails)
 	require.True(t, ok)
 	require.EqualValues(t, 5, outputDetails.ReasoningTokens)
+}
+
+func TestStatisticsFilter_Finish_OmitsEmptyToolCalls(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	handle := mocks.NewMockHttpFilterHandle(ctrl)
+	captured := map[string]any{}
+	handle.EXPECT().SetMetadata(defaultMetadataNamespace, gomock.Any(), gomock.Any()).Do(
+		func(_ string, key string, value any) {
+			captured[key] = value
+		},
+	).AnyTimes()
+	handle.EXPECT().IncrementCounterValue(idRequestsTotal, uint64(1), "anthropic", "claude", "nonstream").Return(shared.MetricsSuccess).Times(1)
+	handle.EXPECT().IncrementCounterValue(idInputTokens, uint64(1), "anthropic", "claude", "nonstream").Return(shared.MetricsSuccess).Times(1)
+	handle.EXPECT().IncrementCounterValue(idOutputTokens, uint64(1), "anthropic", "claude", "nonstream").Return(shared.MetricsSuccess).Times(1)
+	handle.EXPECT().IncrementCounterValue(idTotalTokens, uint64(2), "anthropic", "claude", "nonstream").Return(shared.MetricsSuccess).Times(1)
+
+	filter := &statisticsFilter{
+		handle:  handle,
+		config:  &statisticsConfig{MetadataNamespace: defaultMetadataNamespace},
+		metrics: newTestStats(ctrl),
+		kind:    "anthropic",
+		model:   "claude",
+	}
+
+	resp := &anthropicLLMResponse{
+		usage:     LLMUsage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
+		toolCalls: []anthropicToolCall{},
+		answer:    "ok",
+		reasoning: "",
+	}
+
+	filter.finish(resp, responseTypeNonStream)
+
+	_, exists := captured["tool_calls"]
+	require.False(t, exists)
+}
+
+func TestStatisticsFilter_OnResponseTrailers_FinalizesBufferedResponse(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	requestBody := []byte(`{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hello"}]}`)
+	responseBody := []byte(`{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}`)
+
+	handle := mocks.NewMockHttpFilterHandle(ctrl)
+	handle.EXPECT().GetAttributeString(shared.AttributeIDRequestPath).
+		Return(pkg.UnsafeBufferFromString("/v1/chat/completions"), true)
+	handle.EXPECT().SetMetadata(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
+	handle.EXPECT().RequestHeaders().Return(fake.NewFakeHeaderMap(nil)).AnyTimes()
+	handle.EXPECT().BufferedRequestBody().Return(fake.NewFakeBodyBuffer(requestBody)).AnyTimes()
+	handle.EXPECT().ReceivedRequestBody().Return(nil).AnyTimes()
+	handle.EXPECT().BufferedResponseBody().Return(fake.NewFakeBodyBuffer(responseBody)).AnyTimes()
+	handle.EXPECT().ReceivedResponseBody().Return(nil).AnyTimes()
+	handle.EXPECT().IncrementCounterValue(idRequestsTotal, uint64(1), "openai", "gpt-4o", "nonstream").Return(shared.MetricsSuccess).Times(1)
+	handle.EXPECT().IncrementCounterValue(idInputTokens, uint64(10), "openai", "gpt-4o", "nonstream").Return(shared.MetricsSuccess).Times(1)
+	handle.EXPECT().IncrementCounterValue(idOutputTokens, uint64(20), "openai", "gpt-4o", "nonstream").Return(shared.MetricsSuccess).Times(1)
+	handle.EXPECT().IncrementCounterValue(idTotalTokens, uint64(30), "openai", "gpt-4o", "nonstream").Return(shared.MetricsSuccess).Times(1)
+	handle.EXPECT().RecordHistogramValue(idDuration, gomock.Any(), "openai", "gpt-4o", "nonstream").Return(shared.MetricsSuccess).Times(1)
+
+	filter := &statisticsFilter{
+		handle:  handle,
+		config:  &statisticsConfig{MetadataNamespace: defaultMetadataNamespace},
+		metrics: newTestStats(ctrl),
+	}
+
+	headers := fake.NewFakeHeaderMap(map[string][]string{"content-type": {"application/json"}})
+	require.Equal(t, shared.HeadersStatusStop, filter.OnRequestHeaders(headers, false))
+	require.Equal(t, shared.BodyStatusContinue, filter.OnRequestBody(fake.NewFakeBodyBuffer(requestBody), true))
+	require.Equal(t, shared.HeadersStatusStop, filter.OnResponseHeaders(headers, false))
+	require.Equal(t, shared.BodyStatusStopAndBuffer, filter.OnResponseBody(fake.NewFakeBodyBuffer(responseBody), false))
+	require.Equal(t, shared.TrailersStatusContinue, filter.OnResponseTrailers(fake.NewFakeHeaderMap(nil)))
+	require.True(t, filter.responseProcessed)
+}
+
+func TestStatisticsFilter_OnResponseTrailers_FinalizesStreamingResponse(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	requestBody := []byte(`{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hello"}]}`)
+	chunk := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4,\"total_tokens\":12}}\n")
+
+	handle := mocks.NewMockHttpFilterHandle(ctrl)
+	handle.EXPECT().GetAttributeString(shared.AttributeIDRequestPath).
+		Return(pkg.UnsafeBufferFromString("/v1/chat/completions"), true)
+	handle.EXPECT().SetMetadata(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
+	handle.EXPECT().RequestHeaders().Return(fake.NewFakeHeaderMap(nil)).AnyTimes()
+	handle.EXPECT().BufferedRequestBody().Return(fake.NewFakeBodyBuffer(requestBody)).AnyTimes()
+	handle.EXPECT().ReceivedRequestBody().Return(nil).AnyTimes()
+	handle.EXPECT().IncrementCounterValue(idRequestsTotal, uint64(1), "openai", "gpt-4o", "stream").Return(shared.MetricsSuccess).Times(1)
+	handle.EXPECT().IncrementCounterValue(idInputTokens, uint64(8), "openai", "gpt-4o", "stream").Return(shared.MetricsSuccess).Times(1)
+	handle.EXPECT().IncrementCounterValue(idOutputTokens, uint64(4), "openai", "gpt-4o", "stream").Return(shared.MetricsSuccess).Times(1)
+	handle.EXPECT().IncrementCounterValue(idTotalTokens, uint64(12), "openai", "gpt-4o", "stream").Return(shared.MetricsSuccess).Times(1)
+	handle.EXPECT().RecordHistogramValue(idDuration, gomock.Any(), "openai", "gpt-4o", "stream").Return(shared.MetricsSuccess).Times(1)
+	handle.EXPECT().RecordHistogramValue(idFirstToken, gomock.Any(), "openai", "gpt-4o", "stream").Return(shared.MetricsSuccess).Times(1)
+
+	filter := &statisticsFilter{
+		handle:  handle,
+		config:  &statisticsConfig{MetadataNamespace: defaultMetadataNamespace},
+		metrics: newTestStats(ctrl),
+	}
+
+	headers := fake.NewFakeHeaderMap(map[string][]string{"content-type": {"application/json"}})
+	require.Equal(t, shared.HeadersStatusStop, filter.OnRequestHeaders(headers, false))
+	require.Equal(t, shared.BodyStatusContinue, filter.OnRequestBody(fake.NewFakeBodyBuffer(requestBody), true))
+	sseHeaders := fake.NewFakeHeaderMap(map[string][]string{"content-type": {"text/event-stream"}})
+	require.Equal(t, shared.HeadersStatusContinue, filter.OnResponseHeaders(sseHeaders, false))
+	require.Equal(t, shared.BodyStatusContinue, filter.OnResponseBody(fake.NewFakeBodyBuffer(chunk), false))
+	require.Equal(t, shared.TrailersStatusContinue, filter.OnResponseTrailers(fake.NewFakeHeaderMap(nil)))
+	require.True(t, filter.responseProcessed)
 }

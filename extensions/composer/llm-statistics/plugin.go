@@ -7,6 +7,7 @@ package llmstatistics
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"time"
 
@@ -72,6 +73,8 @@ type statisticsFilter struct {
 	matched           bool
 	parseFailed       bool
 	streamParseFailed bool
+	requestProcessed  bool
+	responseProcessed bool
 	kind              string
 	factory           LLMFactory
 	model             string
@@ -113,12 +116,28 @@ func (f *statisticsFilter) OnRequestHeaders(headers shared.HeaderMap, endOfStrea
 }
 
 func (f *statisticsFilter) OnRequestBody(_ shared.BodyBuffer, endOfStream bool) shared.BodyStatus {
-	if !f.matched {
+	if !f.matched || f.parseFailed || f.requestProcessed {
 		return shared.BodyStatusContinue
 	}
 	if !endOfStream {
 		return shared.BodyStatusStopAndBuffer
 	}
+
+	f.finalizeRequest()
+	return shared.BodyStatusContinue
+}
+
+func (f *statisticsFilter) OnRequestTrailers(shared.HeaderMap) shared.TrailersStatus {
+	if !f.matched || f.parseFailed || f.requestProcessed {
+		return shared.TrailersStatusContinue
+	}
+
+	f.finalizeRequest()
+	return shared.TrailersStatusContinue
+}
+
+func (f *statisticsFilter) finalizeRequest() {
+	f.requestProcessed = true
 
 	body := utility.ReadWholeRequestBody(f.handle)
 	req, err := f.factory.ParseRequest(body)
@@ -126,7 +145,7 @@ func (f *statisticsFilter) OnRequestBody(_ shared.BodyBuffer, endOfStream bool) 
 		f.metrics.requestsErrorIncrement(f.handle, f.kind, "", responseTypeNonStream)
 		f.parseFailed = true
 		f.handle.Log(shared.LogLevelDebug, "llm-statistics: failed to parse request: %s", err.Error())
-		return shared.BodyStatusContinue
+		return
 	}
 
 	f.model = req.GetModel()
@@ -152,8 +171,6 @@ func (f *statisticsFilter) OnRequestBody(_ shared.BodyBuffer, endOfStream bool) 
 	if f.system != "" {
 		f.handle.SetMetadata(f.config.MetadataNamespace, "system", f.system)
 	}
-
-	return shared.BodyStatusContinue
 }
 
 func (f *statisticsFilter) OnResponseHeaders(headers shared.HeaderMap, endOfStream bool) shared.HeadersStatus {
@@ -171,7 +188,7 @@ func (f *statisticsFilter) OnResponseHeaders(headers shared.HeaderMap, endOfStre
 }
 
 func (f *statisticsFilter) OnResponseBody(body shared.BodyBuffer, endOfStream bool) shared.BodyStatus {
-	if !f.matched || f.parseFailed {
+	if !f.matched || f.parseFailed || f.responseProcessed {
 		return shared.BodyStatusContinue
 	}
 
@@ -193,13 +210,7 @@ func (f *statisticsFilter) OnResponseBody(body shared.BodyBuffer, endOfStream bo
 			}
 		}
 		if endOfStream {
-			if f.streamParseFailed {
-				return shared.BodyStatusContinue
-			}
-			resp, err := f.sseParser.Finish()
-			if err == nil {
-				f.finish(resp, responseTypeStream)
-			}
+			f.finalizeStreamingResponse()
 		}
 		return shared.BodyStatusContinue
 	}
@@ -212,13 +223,10 @@ func (f *statisticsFilter) OnResponseBody(body shared.BodyBuffer, endOfStream bo
 }
 
 func (f *statisticsFilter) finalizeBufferedResponse() {
-	if f.parseFailed {
+	if f.parseFailed || f.responseProcessed {
 		return
 	}
-
-	// Mark the buffered non-stream response as finalized so trailers/body end
-	// callbacks cannot parse and record metrics twice.
-	f.parseFailed = true
+	f.responseProcessed = true
 
 	resp, err := f.factory.ParseResponse(utility.ReadWholeResponseBody(f.handle))
 	if err != nil {
@@ -229,14 +237,36 @@ func (f *statisticsFilter) finalizeBufferedResponse() {
 	f.finish(resp, responseTypeNonStream)
 }
 
-func (f *statisticsFilter) OnResponseTrailers(trailers shared.HeaderMap) shared.HeadersStatus {
-	if !f.matched || f.parseFailed || f.sseParser != nil {
-		return shared.HeadersStatusContinue
+func (f *statisticsFilter) finalizeStreamingResponse() {
+	if f.parseFailed || f.responseProcessed {
+		return
+	}
+	f.responseProcessed = true
+	if f.streamParseFailed {
+		return
 	}
 
-	f.finalizeBufferedResponse()
-	return shared.HeadersStatusContinue
+	resp, err := f.sseParser.Finish()
+	if err != nil {
+		f.metrics.requestsErrorIncrement(f.handle, f.kind, f.model, responseTypeStream)
+		f.handle.Log(shared.LogLevelDebug, "llm-statistics: failed to finalize streaming response: %s", err.Error())
+		return
+	}
+	f.finish(resp, responseTypeStream)
 }
+
+func (f *statisticsFilter) OnResponseTrailers(shared.HeaderMap) shared.TrailersStatus {
+	if !f.matched || f.parseFailed || f.responseProcessed {
+		return shared.TrailersStatusContinue
+	}
+	if f.sseParser != nil {
+		f.finalizeStreamingResponse()
+	} else {
+		f.finalizeBufferedResponse()
+	}
+	return shared.TrailersStatusContinue
+}
+
 func (f *statisticsFilter) finish(resp LLMResponse, responseType string) {
 	usage := resp.GetUsage()
 	f.metrics.requestsIncrement(f.handle, f.kind, f.model, responseType)
@@ -258,7 +288,7 @@ func (f *statisticsFilter) finish(resp LLMResponse, responseType string) {
 		f.handle.SetMetadata(f.config.MetadataNamespace, "cached_tokens", int64(cachedTokens))
 	}
 	toolCalls := resp.GetToolCalls()
-	if toolCalls != nil {
+	if hasToolCalls(toolCalls) {
 		f.handle.SetMetadata(f.config.MetadataNamespace, "tool_calls", toolCalls)
 	}
 	if inputDetails := resp.GetInputTokenDetails(); inputDetails != nil {
@@ -315,7 +345,7 @@ func (f *statisticsFilter) finish(resp LLMResponse, responseType string) {
 			if cachedTokens := resp.GetCachedTokens(); cachedTokens > 0 {
 				entry["cached_tokens"] = cachedTokens
 			}
-			if toolCalls := resp.GetToolCalls(); len(toolCalls) > 0 {
+			if toolCalls := resp.GetToolCalls(); hasToolCalls(toolCalls) {
 				entry["tool_calls"] = toolCalls
 			}
 			if inputDetails := resp.GetInputTokenDetails(); inputDetails != nil {
@@ -351,6 +381,24 @@ func stripQueryString(path string) string {
 	return path
 }
 
+func hasToolCalls(toolCalls any) bool {
+	if toolCalls == nil {
+		return false
+	}
+	v := reflect.ValueOf(toolCalls)
+	if !v.IsValid() {
+		return false
+	}
+	switch v.Kind() {
+	case reflect.Slice, reflect.Array, reflect.Map, reflect.String:
+		return v.Len() > 0
+	case reflect.Interface, reflect.Pointer:
+		return !v.IsNil()
+	default:
+		return true
+	}
+}
+
 func WellKnownHttpFilterConfigFactories() map[string]shared.HttpFilterConfigFactory { //nolint:revive
 	return map[string]shared.HttpFilterConfigFactory{
 		ExtensionName: &statisticsConfigFactory{},
@@ -358,23 +406,23 @@ func WellKnownHttpFilterConfigFactories() map[string]shared.HttpFilterConfigFact
 }
 
 func (m statisticsMetrics) requestsIncrement(handle shared.HttpFilterHandle, kind, model, responseType string) {
-	handle.IncrementCounterValue(m.requestsTotal, 1, kind, model, responseType)
+	m.requestsTotal.Record(handle, handle.IncrementCounterValue, 1, kind, model, responseType)
 }
 
 func (m statisticsMetrics) requestsErrorIncrement(handle shared.HttpFilterHandle, kind, model, responseType string) {
-	handle.IncrementCounterValue(m.requestsError, 1, kind, model, responseType)
+	m.requestsError.Record(handle, handle.IncrementCounterValue, 1, kind, model, responseType)
 }
 
 func (m statisticsMetrics) tokensIncrement(handle shared.HttpFilterHandle, kind, model, responseType string, usage LLMUsage) {
-	handle.IncrementCounterValue(m.inputTokens, uint64(usage.InputTokens), kind, model, responseType)
-	handle.IncrementCounterValue(m.outputTokens, uint64(usage.OutputTokens), kind, model, responseType)
-	handle.IncrementCounterValue(m.totalTokens, uint64(usage.TotalTokens), kind, model, responseType)
+	m.inputTokens.Record(handle, handle.IncrementCounterValue, uint64(usage.InputTokens), kind, model, responseType)
+	m.outputTokens.Record(handle, handle.IncrementCounterValue, uint64(usage.OutputTokens), kind, model, responseType)
+	m.totalTokens.Record(handle, handle.IncrementCounterValue, uint64(usage.TotalTokens), kind, model, responseType)
 }
 
 func (m statisticsMetrics) durationRecord(handle shared.HttpFilterHandle, kind, model, responseType string, value uint64) {
-	handle.RecordHistogramValue(m.duration, value, kind, model, responseType)
+	m.duration.Record(handle, handle.RecordHistogramValue, value, kind, model, responseType)
 }
 
 func (m statisticsMetrics) firstTokenRecord(handle shared.HttpFilterHandle, kind, model, responseType string, value uint64) {
-	handle.RecordHistogramValue(m.firstToken, value, kind, model, responseType)
+	m.firstToken.Record(handle, handle.RecordHistogramValue, value, kind, model, responseType)
 }
