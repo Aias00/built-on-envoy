@@ -295,7 +295,7 @@ func (f *statisticsFilter) finish(resp LLMResponse, responseType string) {
 			if cachedTokens := resp.GetCachedTokens(); cachedTokens > 0 {
 				entry["cached_tokens"] = cachedTokens
 			}
-			if toolCalls := resp.GetToolCalls(); toolCalls != nil {
+			if toolCalls := resp.GetToolCalls(); len(toolCalls) > 0 {
 				entry["tool_calls"] = toolCalls
 			}
 			if inputDetails := resp.GetInputTokenDetails(); inputDetails != nil {
