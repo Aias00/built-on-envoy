@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/tetratelabs/built-on-envoy/extensions/composer/llm-statistics/config.schema.json",
+  "title": "LLM Statistics Configuration",
+  "description": "Configuration for the LLM Statistics extension. Collects structured observability data for supported LLM API traffic.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "metadata_namespace": {
+      "type": "string",
+      "description": "Filter metadata namespace for LLM statistics fields. Defaults to \"io.builtonenvoy.llm-statistics\"."
+    },
+    "use_default_attributes": {
+      "type": "boolean",
+      "description": "Emit the full built-in structured log payload."
+    },
+    "use_default_response_attributes": {
+      "type": "boolean",
+      "description": "Emit the default lightweight structured log payload."
+    },
+    "session_id_header": {
+      "type": "string",
+      "description": "Optional request header name used to extract a conversation or session ID."
+    }
+  }
+}

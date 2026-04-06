@@ -87,7 +87,7 @@ type statisticsFilter struct {
 
 func (f *statisticsFilter) OnRequestHeaders(headers shared.HeaderMap, endOfStream bool) shared.HeadersStatus {
 	pathBuf, _ := f.handle.GetAttributeString(shared.AttributeIDRequestPath)
-	path := pathBuf.ToUnsafeString()
+	path := stripQueryString(pathBuf.ToUnsafeString())
 
 	switch {
 	case strings.HasSuffix(path, "/v1/chat/completions"):
@@ -322,6 +322,13 @@ func (f *statisticsFilter) extractSessionID() string {
 		return ""
 	}
 	return f.handle.RequestHeaders().GetOne(f.config.SessionIDHeader).ToUnsafeString()
+}
+
+func stripQueryString(path string) string {
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		return path[:idx]
+	}
+	return path
 }
 
 func WellKnownHttpFilterConfigFactories() map[string]shared.HttpFilterConfigFactory { //nolint:revive

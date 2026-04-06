@@ -71,6 +71,44 @@ func TestWellKnownHttpFilterConfigFactories(t *testing.T) {
 	require.Contains(t, factories, ExtensionName)
 }
 
+func TestStatisticsFilter_OnRequestHeaders_StripsQueryStringForPathMatching(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		wantKind string
+	}{
+		{
+			name:     "openai with query string",
+			path:     "/v1/chat/completions?api-version=2024-10-21",
+			wantKind: KindOpenAI,
+		},
+		{
+			name:     "anthropic with query string",
+			path:     "/v1/messages?beta=true",
+			wantKind: KindAnthropic,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			handle := mocks.NewMockHttpFilterHandle(ctrl)
+			handle.EXPECT().GetAttributeString(shared.AttributeIDRequestPath).
+				Return(pkg.UnsafeBufferFromString(tt.path), true)
+
+			filter := &statisticsFilter{handle: handle}
+			headers := fake.NewFakeHeaderMap(map[string][]string{"content-type": {"application/json"}})
+
+			require.Equal(t, shared.HeadersStatusStop, filter.OnRequestHeaders(headers, false))
+			require.True(t, filter.matched)
+			require.Equal(t, tt.wantKind, filter.kind)
+			require.NotNil(t, filter.factory)
+		})
+	}
+}
+
 func TestStatisticsFilter_OpenAINonStreaming_LightweightLogAndMetrics(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
